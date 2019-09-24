@@ -1,0 +1,7 @@
+{
+  "project.name": "frankamera",
+  "repository.callsign": "CAM",
+  "conduit_uri": "https://phabricator.expert-shops.com/",
+  "history.immutable": false,
+  "load": ["/opt/experty/arc-support"]
+}
