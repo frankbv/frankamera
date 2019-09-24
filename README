@@ -1,0 +1,2 @@
+This project uses the Hikvision Device Network SDK (64-bits), it can be downloaded from
+https://www.hikvision.com/en/Support/Downloads/SDK and extracted in the vendor directory.
