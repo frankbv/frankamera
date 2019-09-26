@@ -1,0 +1,19 @@
+#!/bin/bash
+
+set -e
+
+DIR=$(dirname $0)
+cd ${DIR}
+
+if [ ! -e .env/bin/activate ]; then
+    if [ -d .env ]; then
+        rm -rf .env
+    fi
+
+    python3 -m venv .env
+    ./.env/bin/pip3 install -r requirements.txt
+fi
+
+. ./.env/bin/activate
+
+/usr/bin/env python3 frankamera.py "$@"

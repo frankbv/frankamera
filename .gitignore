@@ -1,0 +1,6 @@
+frankamera.json
+*.mp4
+
+# Environment
+.env
+__pycache__
