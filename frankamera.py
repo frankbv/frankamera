@@ -1,45 +1,135 @@
-from clint.textui import progress
-from datetime import datetime, timedelta
+from aiohttp import web
+from aiohttp_apispec import docs, request_schema, response_schema, setup_aiohttp_apispec
 import json
-import sys
+from marshmallow import Schema, fields
 
 import ffmpeg
-from hikvision import Hikvision
+from hikvision import (
+    Hikvision,
+    CameraSchema,
+    ResultSchema,
+    CameraNotFoundException,
+    InvalidRangeException,
+    RangeNotFoundException,
+    ResponseException
+)
 
-try:
-    with open('frankamera.json') as f:
-        config = json.load(f)
 
-    dvr = Hikvision(
-        config['hikvision']['base_url'],
-        config['hikvision']['username'],
-        config['hikvision']['password'],
-        config['cameras']
+class ErrorResponseSchema(Schema):
+    error = fields.String(default=None)
+
+
+class SearchRequestSchema(Schema):
+    camera_id = fields.Integer(required=True)
+    start_time = fields.DateTime(required=True)
+    end_time = fields.DateTime(required=True)
+
+
+class Frankamera(object):
+    def __init__(self, config='frankamera.json'):
+        with open(config) as fd:
+            self.config = json.load(fd)
+
+        self.dvr = Hikvision(
+            self.config['hikvision']['base_url'],
+            self.config['hikvision']['username'],
+            self.config['hikvision']['password'],
+            self.config['cameras']
+        )
+
+    @docs(
+        summary='Get the registered cameras',
+        responses={
+            500: {'schema': ErrorResponseSchema}
+        }
     )
+    @response_schema(CameraSchema(many=True))
+    async def cameras(self, request: web.Request):
+        cameras = []
+        for camera in self.dvr.cameras.values():
+            cameras.append(CameraSchema().dump(camera))
+        return web.json_response(cameras)
 
-    for camera_id, camera in dvr.cameras.items():
-        print('{}. {}'.format(camera_id, camera))
+    @docs(
+        summary='Search for stored video data',
+        responses={
+            404: {'schema': ErrorResponseSchema, 'description': 'Camera not found'},
+            409: {'schema': ErrorResponseSchema, 'description': 'The given range is invalid'},
+            416: {'schema': ErrorResponseSchema, 'description': 'No video data for the given range and camera'},
+            500: {'schema': ErrorResponseSchema}
+        }
+    )
+    @request_schema(SearchRequestSchema())
+    @response_schema(ResultSchema())
+    async def search(self, request: web.Request):
+        try:
+            data = SearchRequestSchema().load(await request.json())
+            result = self.dvr.search(
+                self.dvr.get_camera_by_id(data['camera_id']),
+                data['start_time'],
+                data['end_time']
+            )
+            return web.json_response(ResultSchema().dump(result))
+        except CameraNotFoundException as ex:
+            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=404)
+        except InvalidRangeException as ex:
+            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=409)
+        except RangeNotFoundException as ex:
+            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=416)
+        except ResponseException as ex:
+            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=500)
 
-    camera_id = int(input('Choose camera to download from: ').strip() or 0)
-    if camera_id not in dvr.cameras:
-        print('Camera {} does not exist'.format(camera_id))
-        sys.exit(1)
+    @docs(
+        summary='Download video data',
+        responses={
+            200: {'description': 'Video data'},
+            404: {'schema': ErrorResponseSchema, 'description': 'Camera not found'},
+            409: {'schema': ErrorResponseSchema, 'description': 'The given range is invalid'},
+            416: {'schema': ErrorResponseSchema, 'description': 'No video data for the given range and camera'},
+            500: {'schema': ErrorResponseSchema}
+        }
+    )
+    @request_schema(ResultSchema())
+    async def download(self, request: web.Request):
+        try:
+            data = ResultSchema().load(await request.json())
+            camera = self.dvr.get_camera_by_id(data['camera_id'])
 
-    start_time = datetime.strptime(input('Start date and time (yyyy-mm-ss hh:mm:ss): ').strip(), '%Y-%m-%d %H:%M:%S')
-    duration = timedelta(seconds=int(input('Length in seconds (default: 30): ').strip() or 30))
-    camera = dvr.cameras[camera_id]
+            result = self.dvr.search(camera, data['start_time'], data['end_time'])
 
-    result = dvr.search(camera, start_time, duration)
+            filename = '{}_{}_{}.mp4'.format(
+                camera,
+                result.start_time.strftime('%Y%m%d%H%M%S'),
+                result.end_time.strftime('%Y%m%d%H%M%S')
+            )
 
-    print('Downloading recording of {} for {} from camera {}'.format(result['start_time'], result['duration'], camera))
+            response = web.StreamResponse()
+            await response.prepare(request)
+            for percentage in ffmpeg.download_rtsp(result.rtsp_uri, result.end_time - result.start_time, filename):
+                line = '{}\n'.format(percentage)
+                await response.write(line.encode('utf-8'))
 
-    filename = '{}_{}_{}.mp4'.format(camera, result['start_time'].strftime('%Y%m%d%H%M%S'), result['duration'])
+            await response.write_eof(b'')
+        except CameraNotFoundException as ex:
+            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=404)
+        except InvalidRangeException as ex:
+            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=409)
+        except RangeNotFoundException as ex:
+            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=416)
+        except ResponseException as ex:
+            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=500)
 
-    bar = progress.Bar(expected_size=100)
-    for percentage in ffmpeg.download_rtsp(result['rtsp_uri'], result['duration'], filename):
-        bar.show(percentage)
 
-    print()
+if __name__ == '__main__':
+    frankamera = Frankamera()
 
-except KeyboardInterrupt:
-    sys.exit(0)
+    app = web.Application()
+    app.add_routes([
+        web.get('/cameras', frankamera.cameras),
+        web.post('/search', frankamera.search),
+        web.post('/download', frankamera.download),
+    ])
+
+    setup_aiohttp_apispec(app, title='Frankamera', version='1', url='/api/docs/swagger.json', swagger_path='/')
+
+    web.run_app(app)
