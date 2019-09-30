@@ -7,5 +7,9 @@
   "cameras": {
     "192.168.1.1": "Camera 1",
     "192.168.1.2": "Camera 2",
+  },
+  "ffmpeg_pool": {
+    "workers": 5,
+    "max_downloads_per_child": 100
   }
 }

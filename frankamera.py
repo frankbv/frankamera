@@ -3,7 +3,7 @@ from aiohttp_apispec import docs, request_schema, response_schema, setup_aiohttp
 import json
 from marshmallow import Schema, fields
 
-import ffmpeg
+from ffmpeg import FFmpeg, JobSchema
 from hikvision import (
     Hikvision,
     CameraSchema,
@@ -37,6 +37,8 @@ class Frankamera(object):
             self.config['cameras']
         )
 
+        self.ffmpeg = FFmpeg(**self.config.get('ffmpeg_pool', {}))
+
     @docs(
         summary='Get the registered cameras',
         responses={
@@ -45,10 +47,7 @@ class Frankamera(object):
     )
     @response_schema(CameraSchema(many=True))
     async def cameras(self, request: web.Request):
-        cameras = []
-        for camera in self.dvr.cameras.values():
-            cameras.append(CameraSchema().dump(camera))
-        return web.json_response(cameras)
+        return web.json_response(CameraSchema(many=True).dump([camera for camera in self.dvr.cameras.values()]))
 
     @docs(
         summary='Search for stored video data',
@@ -97,19 +96,8 @@ class Frankamera(object):
 
             result = self.dvr.search(camera, data['start_time'], data['end_time'])
 
-            filename = '{}_{}_{}.mp4'.format(
-                camera,
-                result.start_time.strftime('%Y%m%d%H%M%S'),
-                result.end_time.strftime('%Y%m%d%H%M%S')
-            )
-
-            response = web.StreamResponse()
-            await response.prepare(request)
-            for percentage in ffmpeg.download_rtsp(result.rtsp_uri, result.end_time - result.start_time, filename):
-                line = '{}\n'.format(percentage)
-                await response.write(line.encode('utf-8'))
-
-            await response.write_eof(b'')
+            job_id = self.ffmpeg.download(result.rtsp_uri, result.end_time - result.start_time)
+            return web.json_response({'job_id': job_id})
         except CameraNotFoundException as ex:
             return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=404)
         except InvalidRangeException as ex:
@@ -118,6 +106,11 @@ class Frankamera(object):
             return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=416)
         except ResponseException as ex:
             return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=500)
+
+    @docs(summary='Get the progress of a download job')
+    @response_schema(JobSchema(many=True))
+    async def jobs(self, request: web.Request):
+        return web.json_response(JobSchema(many=True).dump(self.ffmpeg.get_jobs()))
 
 
 if __name__ == '__main__':
@@ -128,6 +121,7 @@ if __name__ == '__main__':
         web.get('/cameras', frankamera.cameras),
         web.post('/search', frankamera.search),
         web.post('/download', frankamera.download),
+        web.get('/jobs', frankamera.jobs)
     ])
 
     setup_aiohttp_apispec(app, title='Frankamera', version='1', url='/api/docs/swagger.json', swagger_path='/')
