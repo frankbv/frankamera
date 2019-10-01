@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from hikvisionapi import Client
+from requests.exceptions import RequestException as BaseRequestException
 from typing import Dict, Optional
 from tzlocal import get_localzone
 from urllib.parse import urlparse, urlunparse, urlencode, ParseResult
@@ -7,7 +8,13 @@ import uuid
 import xmltodict
 
 from .Camera import Camera
-from .Exceptions import CameraNotFoundException, InvalidRangeException, RangeNotFoundException, ResponseException
+from .Exceptions import (
+    CameraNotFoundException,
+    InvalidRangeException,
+    RangeNotFoundException,
+    RequestException,
+    ResponseException
+)
 from .Result import Result
 
 CAMERA_REFRESH_INTERVAL = timedelta(minutes=15)
@@ -42,9 +49,12 @@ class Hikvision(object):
         if self._last_camera_refresh + CAMERA_REFRESH_INTERVAL > datetime.utcnow():
             return
 
-        response = self._get_client().ContentMgmt.InputProxy.channels(method='get')
-        if 'InputProxyChannelList' not in response or 'InputProxyChannel' not in response['InputProxyChannelList']:
-            raise ResponseException('Invalid response while fetching cameras', response)
+        try:
+            response = self._get_client().ContentMgmt.InputProxy.channels(method='get')
+            if 'InputProxyChannelList' not in response or 'InputProxyChannel' not in response['InputProxyChannelList']:
+                raise ResponseException('Invalid response while fetching cameras', response)
+        except BaseRequestException as ex:
+            raise RequestException('Could not connect to Hikvision DVR: {}'.format(ex))
 
         for camera in response['InputProxyChannelList']['InputProxyChannel']:
             camera_id = int(camera['id'])
@@ -55,10 +65,13 @@ class Hikvision(object):
 
             self._cameras[camera_id] = Camera(camera_id, name, camera['sourceInputPortDescriptor']['ipAddress'])
 
-        response = self._get_client().ContentMgmt.InputProxy.channels.status(method='get')
-        if 'InputProxyChannelStatusList' not in response \
-                or 'InputProxyChannelStatus' not in response['InputProxyChannelStatusList']:
-            raise ResponseException('Invalid response while fetching camera statuses', response)
+        try:
+            response = self._get_client().ContentMgmt.InputProxy.channels.status(method='get')
+            if 'InputProxyChannelStatusList' not in response \
+                    or 'InputProxyChannelStatus' not in response['InputProxyChannelStatusList']:
+                raise ResponseException('Invalid response while fetching camera statuses', response)
+        except BaseRequestException as ex:
+            raise RequestException('Could not connect to Hikvision DVR: {}'.format(ex))
 
         for status in response['InputProxyChannelStatusList']['InputProxyChannelStatus']:
             camera_id = int(status['id'])
@@ -106,12 +119,15 @@ class Hikvision(object):
         })
 
         headers = {'content-type': 'application/xml; charset="UTF-8"'}
-        response = self._get_client().ContentMgmt.search(method='post', data=data, headers=headers)
-        if 'CMSearchResult' not in response \
-                or 'responseStatus' not in response['CMSearchResult'] \
-                or response['CMSearchResult']['responseStatus'] != 'true' \
-                or 'numOfMatches' not in response['CMSearchResult']:
-            raise ResponseException('Invalid response while searching', response)
+        try:
+            response = self._get_client().ContentMgmt.search(method='post', data=data, headers=headers)
+            if 'CMSearchResult' not in response \
+                    or 'responseStatus' not in response['CMSearchResult'] \
+                    or response['CMSearchResult']['responseStatus'] != 'true' \
+                    or 'numOfMatches' not in response['CMSearchResult']:
+                raise ResponseException('Invalid response while searching', response)
+        except BaseRequestException as ex:
+            raise RequestException('Could not connect to Hikvision DVR: {}'.format(ex))
 
         result = None
         if int(response['CMSearchResult']['numOfMatches']) > 0:
@@ -121,8 +137,12 @@ class Hikvision(object):
 
             # These timestamps are not actually UTC, but the local time on the DVR
             result = {
-                'start_time': tz.normalize(datetime.strptime(items[0]['timeSpan']['startTime'], '%Y-%m-%dT%H:%M:%SZ').astimezone(tz)),
-                'end_time': tz.normalize(datetime.strptime(items[-1]['timeSpan']['endTime'], '%Y-%m-%dT%H:%M:%SZ').astimezone(tz)),
+                'start_time': tz.normalize(
+                    datetime.strptime(items[0]['timeSpan']['startTime'], '%Y-%m-%dT%H:%M:%SZ').astimezone(tz)
+                ),
+                'end_time': tz.normalize(
+                    datetime.strptime(items[-1]['timeSpan']['endTime'], '%Y-%m-%dT%H:%M:%SZ').astimezone(tz)
+                ),
                 'rtsp_uri': items[0]['mediaSegmentDescriptor']['playbackURI']
             }
 

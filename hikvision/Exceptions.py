@@ -2,13 +2,18 @@ from datetime import datetime
 from .Camera import Camera
 
 
+class RequestException(Exception):
+    pass
+
+
 class ResponseException(Exception):
     def __init__(self, message: str, response):
-        super().__init__(message)
+        super().__init__()
+        self._message = message
         self._response = response
 
     def __str__(self):
-        return '{}\nResponse: {}'.format(super(), self._response)
+        return '{}\nResponse: {}'.format(self._message, self._response)
 
 
 class CameraNotFoundException(Exception):

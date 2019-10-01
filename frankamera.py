@@ -1,7 +1,7 @@
 from aiohttp import web
 from aiohttp_apispec import docs, request_schema, response_schema, setup_aiohttp_apispec
 import json
-from marshmallow import Schema, fields
+from marshmallow import Schema, fields, exceptions
 
 from ffmpeg import FFmpeg, JobSchema
 from hikvision import (
@@ -10,13 +10,13 @@ from hikvision import (
     ResultSchema,
     CameraNotFoundException,
     InvalidRangeException,
-    RangeNotFoundException,
-    ResponseException
+    RangeNotFoundException
 )
 
 
 class ErrorResponseSchema(Schema):
     error = fields.String(default=None)
+    extra = fields.Dict()
 
 
 class SearchRequestSchema(Schema):
@@ -52,6 +52,7 @@ class Frankamera(object):
     @docs(
         summary='Search for stored video data',
         responses={
+            400: {'schema': ErrorResponseSchema},
             404: {'schema': ErrorResponseSchema, 'description': 'Camera not found'},
             409: {'schema': ErrorResponseSchema, 'description': 'The given range is invalid'},
             416: {'schema': ErrorResponseSchema, 'description': 'No video data for the given range and camera'},
@@ -70,18 +71,17 @@ class Frankamera(object):
             )
             return web.json_response(ResultSchema().dump(result))
         except CameraNotFoundException as ex:
-            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=404)
+            raise web.HTTPNotFound(reason=str(ex))
         except InvalidRangeException as ex:
-            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=409)
+            raise web.HTTPConflict(reason=str(ex))
         except RangeNotFoundException as ex:
-            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=416)
-        except ResponseException as ex:
-            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=500)
+            raise web.HTTPRequestRangeNotSatisfiable(reason=str(ex))
 
     @docs(
         summary='Download video data',
         responses={
             200: {'description': 'Video data'},
+            400: {'schema': ErrorResponseSchema},
             404: {'schema': ErrorResponseSchema, 'description': 'Camera not found'},
             409: {'schema': ErrorResponseSchema, 'description': 'The given range is invalid'},
             416: {'schema': ErrorResponseSchema, 'description': 'No video data for the given range and camera'},
@@ -99,24 +99,52 @@ class Frankamera(object):
             job_id = self.ffmpeg.download(result.rtsp_uri, result.end_time - result.start_time)
             return web.json_response({'job_id': job_id})
         except CameraNotFoundException as ex:
-            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=404)
+            raise web.HTTPNotFound(reason=str(ex))
         except InvalidRangeException as ex:
-            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=409)
+            raise web.HTTPConflict(reason=str(ex))
         except RangeNotFoundException as ex:
-            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=416)
-        except ResponseException as ex:
-            return web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=500)
+            raise web.HTTPRequestRangeNotSatisfiable(reason=str(ex))
 
-    @docs(summary='Get the progress of a download job')
+    @docs(
+        summary='Get the progress of a download job',
+        responses={
+            500: {'schema': ErrorResponseSchema}
+        }
+    )
     @response_schema(JobSchema(many=True))
     async def jobs(self, request: web.Request):
         return web.json_response(JobSchema(many=True).dump(self.ffmpeg.get_jobs()))
+
+    @web.middleware
+    async def process_response(self, request: web.Request, handler) -> web.Response:
+        try:
+            response = await handler(request)
+        except json.JSONDecodeError as ex:
+            response = web.json_response(
+                ErrorResponseSchema().dump({'error': str(ex)}),
+                status=400
+            )
+        except exceptions.ValidationError as ex:
+            response = web.json_response(
+                ErrorResponseSchema().dump({'error': 'Validation error', 'extra': ex.messages}),
+                status=400
+            )
+        except web.HTTPError as ex:
+            response = web.json_response(ErrorResponseSchema().dump({'error': ex.reason}), status=ex.status)
+        except web.HTTPException as ex:
+            response = ex
+        except Exception as ex:
+            response = web.json_response(ErrorResponseSchema().dump({'error': str(ex)}), status=500)
+
+        response.headers['server'] = 'Frankamera'
+
+        return response
 
 
 if __name__ == '__main__':
     frankamera = Frankamera()
 
-    app = web.Application()
+    app = web.Application(middlewares=[frankamera.process_response])
     app.add_routes([
         web.get('/cameras', frankamera.cameras),
         web.post('/search', frankamera.search),
