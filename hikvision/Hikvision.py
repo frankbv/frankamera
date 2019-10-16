@@ -21,18 +21,24 @@ CAMERA_REFRESH_INTERVAL = timedelta(minutes=15)
 
 
 class Hikvision(object):
-    def __init__(self, url: str, username: str, password: str, camera_name_mapping: Optional[Dict] = None):
-        self._url = url
+    def __init__(
+            self,
+            base_url: str,
+            username: str,
+            password: str,
+            camera_ip_to_name_mapping: Optional[Dict] = None
+    ):
+        self._base_url = base_url
         self._username = username
         self._password = password
         self._client = None
         self._cameras = {}
         self._last_camera_refresh = datetime.utcfromtimestamp(0)
-        self.camera_name_mapping = camera_name_mapping or {}
+        self._camera_ip_to_name_mapping = camera_ip_to_name_mapping or {}
 
     def _get_client(self) -> Client:
         if self._client is None:
-            self._client = Client(self._url, self._username, self._password)
+            self._client = Client(self._base_url, self._username, self._password)
         return self._client
 
     @property
@@ -58,11 +64,7 @@ class Hikvision(object):
 
         for camera in response['InputProxyChannelList']['InputProxyChannel']:
             camera_id = int(camera['id'])
-            if camera['sourceInputPortDescriptor']['ipAddress'] in self.camera_name_mapping:
-                name = self.camera_name_mapping[camera['sourceInputPortDescriptor']['ipAddress']]
-            else:
-                name = camera['name']
-
+            name = self._camera_ip_to_name_mapping.get(camera['sourceInputPortDescriptor']['ipAddress'], camera['name'])
             self._cameras[camera_id] = Camera(camera_id, name, camera['sourceInputPortDescriptor']['ipAddress'])
 
         try:
@@ -159,7 +161,7 @@ class Hikvision(object):
         rtsp_uri = urlunparse(
             ParseResult(
                 parsed_uri.scheme,
-                '{}:{}@{}'.format(self._username, self._password, parsed_uri.netloc),
+                parsed_uri.netloc,
                 parsed_uri.path,
                 '',
                 urlencode({'starttime': start_time.strftime('%Y%m%dT%H%M%SZ')}),
