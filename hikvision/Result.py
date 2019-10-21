@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from datetime import datetime
 from marshmallow import Schema, fields
 
@@ -10,7 +9,6 @@ class ResultSchema(Schema):
     rtsp_uri = fields.Url(schemes=['rtsp'])
 
 
-@dataclass
 class Result(object):
     def __init__(self, camera_id: int, start_time: datetime, end_time: datetime, rtsp_uri: str):
         self._camera_id = camera_id

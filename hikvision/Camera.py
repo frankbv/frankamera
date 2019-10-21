@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from marshmallow import Schema, fields
 
 
@@ -9,7 +8,6 @@ class CameraSchema(Schema):
     status = fields.Boolean()
 
 
-@dataclass
 class Camera(object):
     def __init__(self, camera_id: int, name: str, ip_address: str):
         self._id = camera_id
