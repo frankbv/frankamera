@@ -89,9 +89,9 @@ class Hikvision(object):
 
         # If no timezone is set, assume the datetime is in the local timezone
         if start_time.utcoffset() is None:
-            start_time = start_time.astimezone(tz)
+            start_time = tz.localize(start_time)
         if end_time.utcoffset() is None:
-            end_time = end_time.astimezone(tz)
+            end_time = tz.localize(end_time)
 
         # Make sure we work with datetimes that are in the local timezone
         start_time = tz.normalize(start_time.astimezone(tz))
@@ -140,10 +140,10 @@ class Hikvision(object):
             # These timestamps are not actually UTC, but the local time on the DVR
             result = {
                 'start_time': tz.normalize(
-                    datetime.strptime(items[0]['timeSpan']['startTime'], '%Y-%m-%dT%H:%M:%SZ').astimezone(tz)
+                    tz.localize(datetime.strptime(items[0]['timeSpan']['startTime'], '%Y-%m-%dT%H:%M:%SZ'))
                 ),
                 'end_time': tz.normalize(
-                    datetime.strptime(items[-1]['timeSpan']['endTime'], '%Y-%m-%dT%H:%M:%SZ').astimezone(tz)
+                    tz.localize(datetime.strptime(items[-1]['timeSpan']['endTime'], '%Y-%m-%dT%H:%M:%SZ'))
                 ),
                 'rtsp_uri': items[0]['mediaSegmentDescriptor']['playbackURI']
             }
