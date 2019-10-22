@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 from marshmallow import Schema, fields
 from multiprocessing import Manager, Pool
 import os
@@ -52,6 +53,8 @@ class FFmpeg(object):
     MOVING = 'moving'
     PENDING = 'pending'
     RUNNING = 'running'
+
+    _logger = logging.getLogger('frankamera.ffmpeg')
 
     def __init__(
             self,
@@ -120,27 +123,25 @@ class FFmpeg(object):
         return job_id
 
     def _done(self, job_id: str):
-        if job_id in self._jobs[job_id]:
-            callback = self._jobs[job_id]
+        if job_id in self._jobs:
+            FFmpeg.info(job_id, 'Done')
             del self._jobs[job_id]
+        else:
+            FFmpeg.warning(None, 'Done')
 
     def _error(self, ex):
-        import traceback
-
         if isinstance(ex, JobException):
             del self._jobs[ex.job_id]
 
-            print('Error in job {}: {}'.format(ex.job_id, str(ex)))
-            traceback.print_tb(ex.__traceback__)
-            print('Parent exception:')
-            traceback.print_tb(ex.parent_exception.__traceback__)
+            FFmpeg.error(ex.job_id, 'Exception: {}'.format(str(ex)), exc_info=ex)
+            FFmpeg.error(ex.job_id, 'Parent exception', exc_info=ex.parent_exception)
         else:
-            print('Error: {}'.format(str(ex)))
-            traceback.print_tb(ex.__traceback__)
+            FFmpeg.error(None, 'Error {}'.format(str(ex)), exc_info=ex)
 
     @staticmethod
     def _job_update(job: Dict, **kwargs):
         job.update(kwargs)
+        FFmpeg.debug(job, "Update: {}".format(str(kwargs)))
         with open(os.path.join(job['spool_path'], 'job.json'), 'w') as fd:
             json.dump(JobSchema().dump(job), fd)
 
@@ -164,7 +165,9 @@ class FFmpeg(object):
                     )
                 )
             else:
-                uri = job['uri']
+                uri = job['rtsp_uri']
+
+            FFmpeg.debug(job, 'Getting video data from {}'.format(uri))
 
             spool_file = os.path.join(job['spool_path'], job['filename'])
 
@@ -177,6 +180,7 @@ class FFmpeg(object):
             duration = job['end_time'] - job['start_time']
 
             (read_pipe, write_pipe) = os.pipe()
+            FFmpeg.debug(job, 'Starting ffmpeg')
             ffmpeg = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=write_pipe)
 
             FFmpeg._job_update(job, status=FFmpeg.RUNNING, started_at=datetime.now(tz=timezone.utc))
@@ -196,6 +200,7 @@ class FFmpeg(object):
 
                 if time.total_seconds() > duration.total_seconds():
                     if ffmpeg.poll() is None:
+                        FFmpeg.debug(job, 'Stopping ffmpeg')
                         ffmpeg.terminate()
 
             ffmpeg.wait()
@@ -211,6 +216,27 @@ class FFmpeg(object):
         except Exception as ex:
             FFmpeg._job_update(job, status=FFmpeg.ERROR, error=str(ex), done_at=datetime.now(tz=timezone.utc))
             raise JobException(job['job_id'], ex)
+
+    @staticmethod
+    def log(level: int, job, message: str, **kwargs):
+        job_id = job if isinstance(job, str) else job['job_id']
+        FFmpeg._logger.log(level, '{} Job {}: {}'.format(datetime.now(), job_id or 'UNKNOWN', message), **kwargs)
+
+    @staticmethod
+    def info(job, message: str, **kwargs):
+        FFmpeg.log(logging.INFO, job, message, **kwargs)
+
+    @staticmethod
+    def debug(job, message: str, **kwargs):
+        FFmpeg.log(logging.DEBUG, job, message, **kwargs)
+
+    @staticmethod
+    def warning(job, message: str, **kwargs):
+        FFmpeg.log(logging.WARNING, job, message, **kwargs)
+
+    @staticmethod
+    def error(job, message: str, **kwargs):
+        FFmpeg.log(logging.ERROR, job, message, **kwargs)
 
     @staticmethod
     def _initialize():

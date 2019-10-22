@@ -1,8 +1,10 @@
 from aiohttp import web
 from aiohttp_apispec import docs, request_schema, response_schema, setup_aiohttp_apispec
 import json
+import logging
 from marshmallow import Schema, fields, exceptions
 import os
+import sys
 
 from ffmpeg import FFmpeg, JobSchema
 from hikvision import (
@@ -13,6 +15,9 @@ from hikvision import (
     InvalidRangeException,
     RangeNotFoundException
 )
+
+DEFAULT_PORT = 19340
+DEFAULT_LOG_LEVEL = 'info'
 
 
 class ErrorResponseSchema(Schema):
@@ -39,15 +44,29 @@ class Frankamera(object):
             self._config.get('cameras', {})
         )
 
+        server_config = self._config.get('server', {})
+
+        log_config = server_config.get('log', {})
+
+        logger = logging.getLogger('frankamera')
+        logger.setLevel(log_config.get('level', DEFAULT_LOG_LEVEL).upper())
+
+        if 'path' in log_config:
+            os.makedirs(log_config['path'], exist_ok=True)
+            logger.addHandler(logging.FileHandler(os.path.join(log_config['path'], 'frankamera.log')))
+        else:
+            logger.addHandler(logging.StreamHandler(sys.stderr))
+
         self.ffmpeg = FFmpeg(
-            os.path.realpath(self._config.get('storage', {}).get('spool', '.')),
-            os.path.realpath(self._config.get('storage', {}).get('location', '.')),
+            os.path.realpath(server_config.get('spool', '.')),
+            os.path.realpath(server_config.get('storage', '.')),
             username=self._config.get('hikvision').get('username'),
             password=self._config.get('hikvision').get('password'),
             **self._config.get('ffmpeg_pool', {})
         )
 
-        self._api_key = self._config.get('api_key', None)
+        self._port = server_config.get('port', DEFAULT_PORT)
+        self._api_key = server_config.get('api_key', None)
 
     @docs(
         summary='Get the registered cameras',
@@ -186,19 +205,20 @@ class Frankamera(object):
 
         return response
 
+    def run(self):
+        app = web.Application(middlewares=[self.process_request])
+        app.add_routes([
+            web.get('/cameras', self.cameras, allow_head=False),
+            web.post('/search', self.search),
+            web.post('/download', self.download),
+            web.get('/job/{job_id}', self.job, allow_head=False),
+            web.get('/active_jobs', self.active_jobs, allow_head=False),
+        ])
+
+        setup_aiohttp_apispec(app, title='Frankamera', version='1', url='/api/docs/swagger.json', swagger_path='/')
+
+        web.run_app(app, port=self._port)
+
 
 if __name__ == '__main__':
-    frankamera = Frankamera()
-
-    app = web.Application(middlewares=[frankamera.process_request])
-    app.add_routes([
-        web.get('/cameras', frankamera.cameras, allow_head=False),
-        web.post('/search', frankamera.search),
-        web.post('/download', frankamera.download),
-        web.get('/job/{job_id}', frankamera.job, allow_head=False),
-        web.get('/active_jobs', frankamera.active_jobs, allow_head=False),
-    ])
-
-    setup_aiohttp_apispec(app, title='Frankamera', version='1', url='/api/docs/swagger.json', swagger_path='/')
-
-    web.run_app(app)
+    Frankamera().run()

@@ -8,11 +8,16 @@
     "192.168.1.1": "Camera 1",
     "192.168.1.2": "Camera 2",
   },
-  "storage": {
+  "server": {
+    "port": 19340,
+    "api_key": "API_KEY",
     "spool": "/var/spool/frankamera",
-    "location": "/srv/storage/static/video"
+    "storage": "/srv/storage/static/video"
+    "log": {
+      "path": "/var/log/frankamera",
+      "level": "info"
+    }
   },
-  "api_key": "API_KEY",
   "ffmpeg_pool": {
     "workers": 5,
     "max_downloads_per_child": 100
