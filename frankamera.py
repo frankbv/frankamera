@@ -169,7 +169,7 @@ class Frankamera(object):
     @web.middleware
     async def process_request(self, request: web.Request, handler) -> web.Response:
         try:
-            if request.headers.getone('Authorization', None) != self._api_key:
+            if self._api_key is not None and request.headers.getone('Authorization', None) != self._api_key:
                 raise web.HTTPUnauthorized(reason='Invalid API key')
 
             response = await handler(request)
