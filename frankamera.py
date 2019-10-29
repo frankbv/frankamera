@@ -9,6 +9,7 @@ import sys
 import traceback
 from typing import Dict, Optional
 
+from bearer_auth import BearerAuth
 from ffmpeg import FFmpeg, JobSchema
 from hikvision import (
     Hikvision,
@@ -60,7 +61,33 @@ class Frankamera(object):
         )
 
         self._port = server_config.get('port', DEFAULT_PORT)
-        self._api_key = server_config.get('api_key', None)
+
+        api_key = server_config.get('api_key', None)
+        self._api_key = BearerAuth(api_key) if api_key is not None else None
+
+        self._protected_routes = {}
+
+    def _setup_logging(self):
+        log_config = self._config.get('server', {}).get('log', {})
+
+        self._logger = logging.getLogger('frankamera')
+
+        if 'path' in log_config:
+            os.makedirs(log_config['path'], exist_ok=True)
+            handler = logging.FileHandler(os.path.join(log_config['path'], 'frankamera.log'))
+
+            access_logger = logging.getLogger('aiohttp.access')
+            access_logger.setLevel(logging.INFO)
+            access_logger.addHandler(logging.FileHandler(os.path.join(log_config['path'], 'access.log')))
+        else:
+            handler = logging.StreamHandler(sys.stderr)
+
+        handler.setFormatter(
+            logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S%z')
+        )
+
+        self._logger.setLevel(log_config.get('level', DEFAULT_LOG_LEVEL).upper())
+        self._logger.addHandler(handler)
 
     def _setup_logging(self):
         log_config = self._config.get('server', {}).get('log', {})
@@ -198,8 +225,16 @@ class Frankamera(object):
         error_status = 500
 
         try:
-            if self._api_key is not None and request.headers.getone('Authorization', None) != self._api_key:
-                raise web.HTTPUnauthorized(reason='Invalid API key')
+            name = request.match_info.route.name
+            if self._api_key is not None and name is not None and name in self._protected_routes:
+                authorized_header = request.headers.getone('Authorization', None)
+                if not authorized_header:
+                    raise web.HTTPUnauthorized(reason='No API key')
+
+                api_key = BearerAuth.decode(authorized_header)
+                if api_key != self._api_key:
+                    self._logger.warning('Invalid API key: {} != {}'.format(api_key, self._api_key))
+                    raise web.HTTPUnauthorized(reason='Invalid API key')
 
             response = await handler(request)
         except Exception as ex:
@@ -240,17 +275,36 @@ class Frankamera(object):
 
         return response
 
+    def add_route(self, method: str, route: str, handler, name: Optional[str] = None, **kwargs):
+        if name is not None:
+            self._protected_routes[name] = True
+        return web.route(method, route, handler, name=name, **kwargs)
+
     def run(self):
         app = web.Application(middlewares=[self.process_request])
         app.add_routes([
-            web.get('/cameras', self.cameras, allow_head=False),
-            web.post('/search', self.search),
-            web.post('/download', self.download),
-            web.get('/job/{job_id}', self.job, allow_head=False),
-            web.get('/active_jobs', self.active_jobs, allow_head=False),
+            self.add_route('GET', '/cameras', self.cameras, name='cameras', allow_head=False),
+            self.add_route('POST', '/search', self.search, name='search'),
+            self.add_route('POST', '/download', self.download, name='download'),
+            self.add_route('GET', '/job/{job_id}', self.job, name='job', allow_head=False),
+            self.add_route('GET', '/active_jobs', self.active_jobs, name='active_jobs', allow_head=False),
         ])
 
-        setup_aiohttp_apispec(app, title='Frankamera', version='1', url='/api/docs/swagger.json', swagger_path='/')
+        setup_aiohttp_apispec(
+            app,
+            title='Frankamera',
+            version='1',
+            url='/api/docs/swagger.json',
+            swagger_path='/',
+            securityDefinitions={
+                'api_key': {
+                    'type': 'apiKey',
+                    'in': 'header',
+                    'name': 'Authorization',
+                },
+            },
+            security=[{'api_key': []}]
+        )
 
         web.run_app(app, port=self._port)
 
