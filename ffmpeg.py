@@ -98,6 +98,8 @@ class FFmpeg(object):
         spool_dir = os.path.join(self._spool_path, job_id)
         os.makedirs(spool_dir, exist_ok=True)
 
+        FFmpeg.info('Pending', job=job_id)
+
         self._jobs[job_id] = self._manager.dict({})
         FFmpeg._job_update(
             self._jobs[job_id],
@@ -124,24 +126,24 @@ class FFmpeg(object):
 
     def _done(self, job_id: str):
         if job_id in self._jobs:
-            FFmpeg.info(job_id, 'Done')
+            FFmpeg.info('Done', job=job_id)
             del self._jobs[job_id]
         else:
-            FFmpeg.warning(None, 'Done')
+            FFmpeg.warning('Done')
 
     def _error(self, ex):
         if isinstance(ex, JobException):
             del self._jobs[ex.job_id]
 
-            FFmpeg.error(ex.job_id, 'Exception: {}'.format(str(ex)), exc_info=ex)
-            FFmpeg.error(ex.job_id, 'Parent exception', exc_info=ex.parent_exception)
+            FFmpeg.error('Exception: {}'.format(str(ex)), job=ex.job_id, exc_info=ex)
+            FFmpeg.error('Parent exception', job=ex.job_id, exc_info=ex.parent_exception)
         else:
-            FFmpeg.error(None, 'Error {}'.format(str(ex)), exc_info=ex)
+            FFmpeg.error('Error {}'.format(str(ex)), exc_info=ex)
 
     @staticmethod
     def _job_update(job: Dict, **kwargs):
         job.update(kwargs)
-        FFmpeg.debug(job, "Update: {}".format(str(kwargs)))
+        FFmpeg.debug("Update: {}".format(str(kwargs)), job=job)
         with open(os.path.join(job['spool_path'], 'job.json'), 'w') as fd:
             json.dump(JobSchema().dump(job), fd)
 
@@ -167,7 +169,7 @@ class FFmpeg(object):
             else:
                 uri = job['rtsp_uri']
 
-            FFmpeg.debug(job, 'Getting video data from {}'.format(uri))
+            FFmpeg.debug('Getting video data from {}'.format(uri), job=job)
 
             spool_file = os.path.join(job['spool_path'], job['filename'])
 
@@ -180,7 +182,7 @@ class FFmpeg(object):
             duration = job['end_time'] - job['start_time']
 
             (read_pipe, write_pipe) = os.pipe()
-            FFmpeg.debug(job, 'Starting ffmpeg')
+            FFmpeg.info('Starting', job=job)
             ffmpeg = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=write_pipe)
 
             FFmpeg._job_update(job, status=FFmpeg.RUNNING, started_at=datetime.now(tz=timezone.utc))
@@ -200,7 +202,7 @@ class FFmpeg(object):
 
                 if time.total_seconds() > duration.total_seconds():
                     if ffmpeg.poll() is None:
-                        FFmpeg.debug(job, 'Stopping ffmpeg')
+                        FFmpeg.debug('Stopping ffmpeg', job=job)
                         ffmpeg.terminate()
 
             ffmpeg.wait()
@@ -218,25 +220,25 @@ class FFmpeg(object):
             raise JobException(job['job_id'], ex)
 
     @staticmethod
-    def log(level: int, job, message: str, **kwargs):
+    def log(level: int, message: str, job: Optional = None, **kwargs):
         job_id = job if isinstance(job, str) else job['job_id']
-        FFmpeg._logger.log(level, '{} Job {}: {}'.format(datetime.now(), job_id or 'UNKNOWN', message), **kwargs)
+        FFmpeg._logger.log(level, '[{}] {}'.format(job_id or 'UNKNOWN', message), **kwargs)
 
     @staticmethod
-    def info(job, message: str, **kwargs):
-        FFmpeg.log(logging.INFO, job, message, **kwargs)
+    def info(message: str, job: Optional = None, **kwargs):
+        FFmpeg.log(logging.INFO, message, job=job, **kwargs)
 
     @staticmethod
-    def debug(job, message: str, **kwargs):
-        FFmpeg.log(logging.DEBUG, job, message, **kwargs)
+    def debug(message: str, job: Optional = None, **kwargs):
+        FFmpeg.log(logging.DEBUG, message, job=job, **kwargs)
 
     @staticmethod
-    def warning(job, message: str, **kwargs):
-        FFmpeg.log(logging.WARNING, job, message, **kwargs)
+    def warning(message: str, job: Optional = None, **kwargs):
+        FFmpeg.log(logging.WARNING, message, job=job, **kwargs)
 
     @staticmethod
-    def error(job, message: str, **kwargs):
-        FFmpeg.log(logging.ERROR, job, message, **kwargs)
+    def error(message: str, job: Optional = None, **kwargs):
+        FFmpeg.log(logging.ERROR, message, job=job, **kwargs)
 
     @staticmethod
     def _initialize():

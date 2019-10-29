@@ -2,9 +2,12 @@ from aiohttp import web
 from aiohttp_apispec import docs, request_schema, response_schema, setup_aiohttp_apispec
 import json
 import logging
+import logging.config
 from marshmallow import Schema, fields, exceptions
 import os
 import sys
+import traceback
+from typing import Dict, Optional
 
 from ffmpeg import FFmpeg, JobSchema
 from hikvision import (
@@ -46,16 +49,7 @@ class Frankamera(object):
 
         server_config = self._config.get('server', {})
 
-        log_config = server_config.get('log', {})
-
-        logger = logging.getLogger('frankamera')
-        logger.setLevel(log_config.get('level', DEFAULT_LOG_LEVEL).upper())
-
-        if 'path' in log_config:
-            os.makedirs(log_config['path'], exist_ok=True)
-            logger.addHandler(logging.FileHandler(os.path.join(log_config['path'], 'frankamera.log')))
-        else:
-            logger.addHandler(logging.StreamHandler(sys.stderr))
+        self._setup_logging()
 
         self.ffmpeg = FFmpeg(
             os.path.realpath(server_config.get('spool', '.')),
@@ -67,6 +61,28 @@ class Frankamera(object):
 
         self._port = server_config.get('port', DEFAULT_PORT)
         self._api_key = server_config.get('api_key', None)
+
+    def _setup_logging(self):
+        log_config = self._config.get('server', {}).get('log', {})
+
+        self._logger = logging.getLogger('frankamera')
+
+        if 'path' in log_config:
+            os.makedirs(log_config['path'], exist_ok=True)
+            handler = logging.FileHandler(os.path.join(log_config['path'], 'frankamera.log'))
+
+            access_logger = logging.getLogger('aiohttp.access')
+            access_logger.setLevel(logging.INFO)
+            access_logger.addHandler(logging.FileHandler(os.path.join(log_config['path'], 'access.log')))
+        else:
+            handler = logging.StreamHandler(sys.stderr)
+
+        handler.setFormatter(
+            logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S%z')
+        )
+
+        self._logger.setLevel(log_config.get('level', DEFAULT_LOG_LEVEL).upper())
+        self._logger.addHandler(handler)
 
     @docs(
         summary='Get the registered cameras',
@@ -166,40 +182,59 @@ class Frankamera(object):
     async def active_jobs(self, request: web.Request):
         return web.json_response(JobSchema(many=True).dump(self.ffmpeg.get_all_active_jobs()))
 
+    @staticmethod
+    def _frame_summary_to_tuple(frame: traceback.FrameSummary) -> Dict:
+        return {
+            'filename': frame.filename,
+            'lineno': frame.lineno,
+            'name': frame.name,
+            'line': frame.line,
+            'locals': frame.locals
+        }
+
     @web.middleware
     async def process_request(self, request: web.Request, handler) -> web.Response:
+        error = None
+        error_status = 500
+
         try:
             if self._api_key is not None and request.headers.getone('Authorization', None) != self._api_key:
                 raise web.HTTPUnauthorized(reason='Invalid API key')
 
             response = await handler(request)
-        except json.JSONDecodeError as ex:
-            response = web.json_response(
-                ErrorResponseSchema().dump({'error': str(ex)}),
-                status=400
-            )
-        except exceptions.ValidationError as ex:
-            response = web.json_response(
-                ErrorResponseSchema().dump({'error': 'Validation error', 'extra': ex.messages}),
-                status=400
-            )
-        except web.HTTPClientError as ex:
-            response = web.json_response(ErrorResponseSchema().dump({'error': ex.reason}), status=ex.status)
-        except web.HTTPError as ex:
-            response = web.json_response(ErrorResponseSchema().dump({'error': ex.reason}), status=ex.status)
-        except web.HTTPException as ex:
-            response = ex
         except Exception as ex:
-            import traceback
-            traceback.print_tb(ex.__traceback__)
+            self._logger.error(''.join(traceback.format_exception(type(ex), ex, ex.__traceback__, chain=True)))
 
-            response = web.json_response(
-                ErrorResponseSchema().dump({
-                    'error': 'Unknown error: {}'.format(str(ex)),
-                    'extra': {'class': str(ex.__class__)},
-                }),
-                status=500
-            )
+            response = None
+
+            if isinstance(ex, json.JSONDecodeError):
+                error = {'error': str(ex)}
+                error_status = 400
+            elif isinstance(ex, exceptions.ValidationError):
+                error = {'error': 'Validation error', 'extra': ex.messages}
+                error_status = 400
+            elif isinstance(ex, KeyError):
+                error = {'error': 'Key {} not found'.format(str(ex))}
+                error_status = 400
+            elif isinstance(ex, web.HTTPClientError) or isinstance(ex, web.HTTPError):
+                error = {'error': ex.reason}
+                error_status = ex.status
+            elif isinstance(ex, web.HTTPException):
+                response = ex
+            else:
+                error = {'error': 'Unknown error: {}'.format(str(ex)), 'extra': {'class': str(ex.__class__)}}
+                error_status = 500
+
+            if self._config.get('debug', False):
+                error['extra'] = error.get('extra', {})
+                error['extra']['exception'] = str(ex.__class__)
+                error['extra']['message'] = str(ex)
+                error['extra']['backtrace'] = [
+                    self._frame_summary_to_tuple(frame) for frame in traceback.extract_tb(ex.__traceback__)
+                ]
+
+            if not response:
+                response = web.json_response(ErrorResponseSchema().dump(error), status=error_status)
 
         response.headers['server'] = 'Frankamera'
 
