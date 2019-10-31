@@ -93,28 +93,6 @@ class Frankamera(object):
         self._logger.setLevel(log_config.get('level', DEFAULT_LOG_LEVEL).upper())
         self._logger.addHandler(handler)
 
-    def _setup_logging(self):
-        log_config = self._config.get('server', {}).get('log', {})
-
-        self._logger = logging.getLogger('frankamera')
-
-        if 'path' in log_config:
-            os.makedirs(log_config['path'], exist_ok=True)
-            handler = logging.FileHandler(os.path.join(log_config['path'], 'frankamera.log'))
-
-            access_logger = logging.getLogger('aiohttp.access')
-            access_logger.setLevel(logging.INFO)
-            access_logger.addHandler(logging.FileHandler(os.path.join(log_config['path'], 'access.log')))
-        else:
-            handler = logging.StreamHandler(sys.stderr)
-
-        handler.setFormatter(
-            logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S%z')
-        )
-
-        self._logger.setLevel(log_config.get('level', DEFAULT_LOG_LEVEL).upper())
-        self._logger.addHandler(handler)
-
     @docs(
         summary='Get the registered cameras',
         responses={
