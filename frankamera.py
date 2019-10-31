@@ -36,6 +36,10 @@ class SearchRequestSchema(Schema):
     end_time = fields.DateTime(required=True)
 
 
+class DownloadRequestSchema(SearchRequestSchema):
+    callback_uri = fields.Url(required=True)
+
+
 class Frankamera(object):
     def __init__(self, config='frankamera.json'):
         with open(config) as fd:
@@ -160,12 +164,13 @@ class Frankamera(object):
             500: {'schema': ErrorResponseSchema}
         }
     )
-    @request_schema(ResultSchema())
+    @request_schema(DownloadRequestSchema())
+    @response_schema(JobSchema())
     async def download(self, request: web.Request):
         try:
-            data = ResultSchema().load(await request.json())
-            camera = self.dvr.get_camera_by_id(data['camera_id'])
+            data = DownloadRequestSchema().load(await request.json())
 
+            camera = self.dvr.get_camera_by_id(data['camera_id'])
             result = self.dvr.search(camera, data['start_time'], data['end_time'])
 
             filename = '{}_{}_{}.mp4'.format(
@@ -174,9 +179,15 @@ class Frankamera(object):
                 result.end_time.strftime('%Y%m%dT%H%M%S%z')
             )
 
-            job_id = self.ffmpeg.download(result.rtsp_uri, result.start_time, result.end_time, filename)
+            job = self.ffmpeg.download(
+                result.rtsp_uri,
+                result.start_time,
+                result.end_time,
+                filename,
+                data['callback_uri']
+            )
 
-            return web.json_response({'job_id': job_id})
+            return web.json_response(JobSchema().dump(job))
         except CameraNotFoundException as ex:
             raise web.HTTPNotFound(reason=str(ex))
         except InvalidRangeException as ex:

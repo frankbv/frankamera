@@ -5,6 +5,7 @@ from marshmallow import Schema, fields
 from multiprocessing import Manager, Pool
 import os
 import re
+import requests
 import select
 import shlex
 from shutil import move
@@ -92,7 +93,14 @@ class FFmpeg(object):
     def get_all_active_jobs(self) -> List[Dict]:
         return [dict(job) for job in self._jobs.values()]
 
-    def download(self, rtsp_uri: str, start_time: datetime, end_time: datetime, filename: str) -> str:
+    def download(
+            self,
+            rtsp_uri: str,
+            start_time: datetime,
+            end_time: datetime,
+            filename: str,
+            callback_uri: Optional[str] = None
+    ) -> Dict:
         job_id = str(uuid4())
 
         spool_dir = os.path.join(self._spool_path, job_id)
@@ -101,19 +109,21 @@ class FFmpeg(object):
         FFmpeg.info('Pending', job=job_id)
 
         self._jobs[job_id] = self._manager.dict({})
-        FFmpeg._job_update(
-            self._jobs[job_id],
-            job_id=job_id,
-            filename=filename,
-            start_time=start_time,
-            end_time=end_time,
-            spool_path=spool_dir,
-            rtsp_uri=rtsp_uri,
-            storage_path=os.path.join(self._storage_path, job_id),
-            status=FFmpeg.PENDING,
-            progress=0,
-            requested_at=datetime.now(tz=timezone.utc),
-        )
+        initialize_job = {
+            'job_id': job_id,
+            'filename': filename,
+            'start_time': start_time,
+            'end_time': end_time,
+            'spool_path': spool_dir,
+            'rtsp_uri': rtsp_uri,
+            'storage_path': os.path.join(self._storage_path, job_id),
+            'status': FFmpeg.PENDING,
+            'progress': 0,
+            'requested_at': datetime.now(tz=timezone.utc),
+            'callback_uri': callback_uri,
+        }
+
+        FFmpeg._job_update(self._jobs[job_id], **initialize_job)
 
         self._pool.apply_async(
             FFmpeg._download_process,
@@ -122,21 +132,33 @@ class FFmpeg(object):
             error_callback=self._error
         )
 
-        return job_id
+        return initialize_job
 
     def _done(self, job_id: str):
-        if job_id in self._jobs:
-            FFmpeg.info('Done', job=job_id)
-            del self._jobs[job_id]
-        else:
-            FFmpeg.warning('Done')
+        job = self._jobs[job_id]
+
+        FFmpeg.info('Done {}'.format(str(job)), job=job_id)
+
+        callback_uri = job.get('callback_uri', None)
+        if callback_uri is not None:
+            try:
+                FFmpeg.debug('Calling callback URI {}'.format(callback_uri), job=job_id)
+                response = requests.post(callback_uri, json=JobSchema().dump(job), timeout=30)
+                FFmpeg.debug('Callback URI response: {} {}'.format(response.status_code, response.text), job=job_id)
+                response.raise_for_status()
+            except Exception as ex:
+                message = 'Failed calling callback URI {}: {}'.format(callback_uri, str(ex))
+                self._job_update(job, error=message)
+                FFmpeg.error(message, job=job, exc_info=ex)
+
+        del self._jobs[job_id]
 
     def _error(self, ex):
         if isinstance(ex, JobException):
-            del self._jobs[ex.job_id]
-
             FFmpeg.error('Exception: {}'.format(str(ex)), job=ex.job_id, exc_info=ex)
             FFmpeg.error('Parent exception', job=ex.job_id, exc_info=ex.parent_exception)
+
+            self._done(ex.job_id)
         else:
             FFmpeg.error('Error {}'.format(str(ex)), exc_info=ex)
 
@@ -187,6 +209,7 @@ class FFmpeg(object):
 
             FFmpeg._job_update(job, status=FFmpeg.RUNNING, started_at=datetime.now(tz=timezone.utc))
 
+            stopping = False
             while ffmpeg.poll() is None:
                 fd_count = len(select.select([read_pipe], [], [], 1)[0])
                 if fd_count == 1:
@@ -200,10 +223,10 @@ class FFmpeg(object):
                             progress=time.total_seconds() / max(time.total_seconds(), duration.total_seconds()) * 100
                         )
 
-                if time.total_seconds() > duration.total_seconds():
-                    if ffmpeg.poll() is None:
-                        FFmpeg.debug('Stopping ffmpeg', job=job)
-                        ffmpeg.terminate()
+                if not stopping and time.total_seconds() > duration.total_seconds() and ffmpeg.poll() is None:
+                    FFmpeg.debug('Stopping ffmpeg', job=job)
+                    ffmpeg.terminate()
+                    stopping = True
 
             ffmpeg.wait()
 
@@ -218,6 +241,7 @@ class FFmpeg(object):
         except Exception as ex:
             FFmpeg._job_update(job, status=FFmpeg.ERROR, error=str(ex), done_at=datetime.now(tz=timezone.utc))
             raise JobException(job['job_id'], ex)
+
 
     @staticmethod
     def log(level: int, message: str, job: Optional = None, **kwargs):
