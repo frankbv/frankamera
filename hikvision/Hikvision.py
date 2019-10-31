@@ -25,8 +25,7 @@ class Hikvision(object):
             self,
             base_url: str,
             username: str,
-            password: str,
-            camera_ip_to_name_mapping: Optional[Dict] = None
+            password: str
     ):
         self._base_url = base_url
         self._username = username
@@ -34,7 +33,6 @@ class Hikvision(object):
         self._client = None
         self._cameras = {}
         self._last_camera_refresh = datetime.utcfromtimestamp(0)
-        self._camera_ip_to_name_mapping = camera_ip_to_name_mapping or {}
 
     def _get_client(self) -> Client:
         if self._client is None:
@@ -64,8 +62,11 @@ class Hikvision(object):
 
         for camera in response['InputProxyChannelList']['InputProxyChannel']:
             camera_id = int(camera['id'])
-            name = self._camera_ip_to_name_mapping.get(camera['sourceInputPortDescriptor']['ipAddress'], camera['name'])
-            self._cameras[camera_id] = Camera(camera_id, name, camera['sourceInputPortDescriptor']['ipAddress'])
+            self._cameras[camera_id] = Camera(
+                camera_id,
+                camera['name'],
+                camera['sourceInputPortDescriptor']['ipAddress']
+            )
 
         try:
             response = self._get_client().ContentMgmt.InputProxy.channels.status(method='get')

@@ -48,8 +48,7 @@ class Frankamera(object):
         self.dvr = Hikvision(
             self._config.get('hikvision').get('base_url'),
             self._config.get('hikvision').get('username'),
-            self._config.get('hikvision').get('password'),
-            self._config.get('cameras', {})
+            self._config.get('hikvision').get('password')
         )
 
         server_config = self._config.get('server', {})

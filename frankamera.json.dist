@@ -4,10 +4,6 @@
     "username": "user",
     "password": ""
   },
-  "cameras": {
-    "192.168.1.1": "Camera 1",
-    "192.168.1.2": "Camera 2",
-  },
   "server": {
     "port": 19340,
     "api_key": "API_KEY",
