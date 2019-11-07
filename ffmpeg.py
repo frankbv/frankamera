@@ -219,9 +219,9 @@ class FFmpeg(object):
             while ffmpeg.poll() is None:
                 fd_count = len(select.select([read_pipe], [], [], 1)[0])
                 if fd_count == 1:
-                    buf = os.read(read_pipe, 1024)
-                    output += str(buf)
-                    progress = dict(PROGRESS_RE.findall(str(buf)))
+                    buf = os.read(read_pipe, 1024).decode('utf-8')
+                    output += buf
+                    progress = dict(PROGRESS_RE.findall(buf))
                     if 'frame' in progress and 'size' in progress and 'time' in progress:
                         hours, minutes, seconds = progress['time'].split(':')
                         time = timedelta(hours=int(hours), minutes=int(minutes), seconds=float(seconds))
@@ -237,7 +237,7 @@ class FFmpeg(object):
 
             ffmpeg.wait()
 
-            if ffmpeg.returncode != 0:
+            if not stopping and ffmpeg.returncode != 0:
                 raise Exception('FFmpeg failed: {}'.format(output))
 
             if job['spool_path'] != job['storage_path']:
