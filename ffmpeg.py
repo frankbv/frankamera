@@ -15,11 +15,14 @@ from typing import Dict, List, Optional
 from urllib.parse import urlparse, urlunparse, ParseResult
 from uuid import uuid4
 
+from hikvision import Camera
+
 PROGRESS_RE = re.compile(r'\s*(frame|fps|q|size|time|bitrate|speed)\s*=\s*(\S+)\s*')
 
 
 class JobSchema(Schema):
     job_id = fields.String()
+    camera_id = fields.Integer()
     filename = fields.String()
     start_time = fields.DateTime()
     end_time = fields.DateTime()
@@ -95,6 +98,7 @@ class FFmpeg(object):
 
     def download(
             self,
+            camera: Camera,
             rtsp_uri: str,
             start_time: datetime,
             end_time: datetime,
@@ -111,6 +115,7 @@ class FFmpeg(object):
         self._jobs[job_id] = self._manager.dict({})
         initialize_job = {
             'job_id': job_id,
+            'camera_id': camera.id,
             'filename': filename,
             'start_time': start_time,
             'end_time': end_time,

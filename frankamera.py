@@ -157,6 +157,7 @@ class Frankamera(object):
             )
 
             job = self.ffmpeg.download(
+                camera,
                 result.rtsp_uri,
                 result.start_time,
                 result.end_time,
